@@ -1,4 +1,4 @@
-# 软件研发知识库 TestBench 出题脚本
+# TestBench 出题脚本
 
 这个脚本用于从 OCR 后的 Markdown 软件设计说明书中生成 RAG 评测用问题和标准答案，并输出 Excel，方便人工复核。
 
