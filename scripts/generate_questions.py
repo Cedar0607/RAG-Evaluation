@@ -26,18 +26,25 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "retries": 2,
     },
     "generation": {
+        "generation_mode": "section_detailed",
         "target_count": 30,
         "candidate_multiplier": 1.2,
         "cross_doc_count": 2,
         "language": "简体中文",
-        "max_chunk_chars": 60000,
-        "chunk_overlap_chars": 800,
-        "max_chunks_per_doc": 8,
-        "max_total_chunks": 40,
+        "max_chunk_chars": 80000,
+        "chunk_overlap_chars": 1000,
+        "max_chunks_per_doc": 5,
+        "max_total_chunks": 30,
+        "min_chunk_chars": 800,
         "max_llm_input_chars": 180000,
         "knowledge_points_per_chunk": 6,
         "questions_per_doc_min": 3,
         "questions_per_doc_max": 35,
+        "questions_per_chunk": 2,
+        "answer_min_paragraphs": 2,
+        "answer_max_paragraphs": 4,
+        "answer_min_chars": 350,
+        "answer_max_chars": 1200,
         "max_candidates_total": 45,
         "continue_on_error": True,
         "max_consecutive_llm_errors": 3,
@@ -46,6 +53,34 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "checkpoint_json": True,
         "json_repair_retries": 1,
         "temperature": 0.2,
+        "section_include_keywords": [
+            "功能",
+            "设计",
+            "架构",
+            "流程",
+            "接口",
+            "模块",
+            "软件层",
+            "CPD",
+            "处理",
+            "异常",
+            "状态",
+            "数据",
+            "时序",
+            "配置",
+            "交互",
+            "约束"
+        ],
+        "section_exclude_keywords": [
+            "目录",
+            "修订记录",
+            "变更记录",
+            "术语",
+            "缩略语",
+            "参考文献",
+            "参考资料",
+            "引言"
+        ],
     },
 }
 
@@ -58,6 +93,10 @@ QUESTION_TYPES = [
     "exception",
     "dependency",
     "cross_doc",
+    "section_explanation",
+    "end_to_end_process",
+    "module_behavior",
+    "architecture",
 ]
 
 
@@ -223,14 +262,90 @@ def split_document(document: Document, max_chars: int, overlap_chars: int) -> li
 def limit_chunks_for_fast_run(chunks: list[Chunk], generation_config: dict[str, Any]) -> list[Chunk]:
     max_per_doc = int(generation_config.get("max_chunks_per_doc", 0) or 0)
     max_total = int(generation_config.get("max_total_chunks", 0) or 0)
+    selection_mode = str(generation_config.get("chunk_selection", "scored")).lower()
 
     selected: list[Chunk] = []
     for _, doc_chunks in group_by(chunks, "doc_id").items():
-        selected.extend(select_evenly(doc_chunks, max_per_doc))
+        if selection_mode == "even":
+            selected.extend(select_evenly(doc_chunks, max_per_doc))
+        else:
+            selected.extend(select_high_value_chunks(doc_chunks, max_per_doc, generation_config))
 
     if max_total > 0:
-        selected = select_evenly(selected, max_total)
+        if selection_mode == "even":
+            selected = select_evenly(selected, max_total)
+        else:
+            selected = select_high_value_chunks(selected, max_total, generation_config)
     return selected
+
+
+def select_high_value_chunks(chunks: list[Chunk], limit: int, generation_config: dict[str, Any]) -> list[Chunk]:
+    if limit <= 0 or len(chunks) <= limit:
+        return chunks
+
+    scored = [(score_chunk(chunk, generation_config), index, chunk) for index, chunk in enumerate(chunks)]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    selected = [chunk for score, _, chunk in scored if score > 0][:limit]
+
+    if len(selected) < limit:
+        selected_ids = {chunk.chunk_id for chunk in selected}
+        for _, _, chunk in scored:
+            if chunk.chunk_id not in selected_ids:
+                selected.append(chunk)
+                selected_ids.add(chunk.chunk_id)
+            if len(selected) >= limit:
+                break
+
+    return sorted(selected, key=lambda chunk: (chunk.doc_id, chunk.start_char))
+
+
+def score_chunk(chunk: Chunk, generation_config: dict[str, Any]) -> int:
+    title_text = f"{chunk.section_title} {chunk.heading_path}"
+    content_text = chunk.content
+    combined = f"{title_text}\n{content_text[:5000]}"
+    min_chars = int(generation_config.get("min_chunk_chars", 0) or 0)
+    include_keywords = ensure_list(generation_config.get("section_include_keywords"))
+    exclude_keywords = ensure_list(generation_config.get("section_exclude_keywords"))
+
+    if len(content_text.strip()) < min_chars:
+        return 0
+
+    if any(keyword and keyword.lower() in title_text.lower() for keyword in exclude_keywords):
+        return 0
+
+    score = 1
+    if len(content_text) >= 3000:
+        score += 2
+    if len(content_text) >= 10000:
+        score += 2
+    if len(content_text) >= 30000:
+        score += 1
+
+    for keyword in include_keywords:
+        if not keyword:
+            continue
+        keyword_lower = keyword.lower()
+        if keyword_lower in title_text.lower():
+            score += 8
+        if keyword_lower in combined.lower():
+            score += 2
+
+    structural_patterns = [
+        r"\|.+\|.+\|",
+        r"接口",
+        r"输入",
+        r"输出",
+        r"异常",
+        r"状态",
+        r"步骤",
+        r"流程",
+        r"调用",
+    ]
+    for pattern in structural_patterns:
+        if re.search(pattern, combined, re.IGNORECASE):
+            score += 2
+
+    return score
 
 
 def select_evenly(items: list[Any], limit: int) -> list[Any]:
@@ -546,6 +661,76 @@ evidence_summary, quality_reason
     return result
 
 
+def generate_section_detailed_candidates(
+    client: LLMClient,
+    chunk: Chunk,
+    generation_config: dict[str, Any],
+    target_questions: int,
+) -> list[dict[str, Any]]:
+    if target_questions <= 0:
+        return []
+
+    answer_min_paragraphs = int(generation_config.get("answer_min_paragraphs", 2))
+    answer_max_paragraphs = int(generation_config.get("answer_max_paragraphs", 4))
+    answer_min_chars = int(generation_config.get("answer_min_chars", 350))
+    answer_max_chars = int(generation_config.get("answer_max_chars", 1200))
+
+    system_prompt = (
+        "你是一位软件研发知识库 TestBench 出题专家。你需要基于软件设计文档的一个完整章节，"
+        "生成适合评估 RAG 知识库效果的综合型问题和标准答案。标准答案必须完全基于输入章节，"
+        "不允许补充文档外信息。只输出 JSON 数组，不要输出解释。"
+    )
+    user_prompt = f"""
+请基于以下软件设计文档章节生成 {target_questions} 道综合型问答。
+
+问题要求：
+1. 必须只生成 {target_questions} 道题，不要超过 {target_questions} 道。
+2. 问题要围绕完整功能、CPD 项、软件层架构、模块职责、端到端流程、接口协作、异常处理或关键约束展开。
+3. 问题应适合研发、测试、维护人员查阅设计文档时提出。
+4. 避免只能一句话回答的问题，例如“某字段是什么”“某接口叫什么”“是否支持某功能”。
+5. 如果当前章节不足以支撑多段答案，可以少生成或返回空数组。
+
+Ground Truth 要求：
+1. 不要只写一句话；每个 ground_truth 写成 {answer_min_paragraphs}~{answer_max_paragraphs} 个自然段。
+2. 总长度建议控制在 {answer_min_chars}~{answer_max_chars} 个中文字符。
+3. 回答应先概括该章节描述的功能/架构/流程目标，再展开说明关键设计内容。
+4. 如果章节中包含流程、接口、字段、状态、约束、异常、上下游依赖或软件层交互，应在答案中一并说明。
+5. 必须忠实于输入章节；文档没有明确说明的内容不要推断。
+6. 使用{generation_config["language"]}。
+
+文档信息：
+doc_id: {chunk.doc_id}
+doc_name: {chunk.doc_name}
+chunk_id: {chunk.chunk_id}
+section_title: {chunk.section_title}
+heading_path: {chunk.heading_path}
+
+章节内容：
+{truncate_text(chunk.content, generation_config["max_llm_input_chars"])}
+
+输出 JSON 数组，每个对象字段为：
+candidate_id, question, ground_truth, question_type, difficulty, answer_scope,
+source_doc, source_sections, source_chunk_ids, related_knowledge_ids, required_evidence,
+evidence_summary, quality_reason
+""".strip()
+
+    items = chat_json_array(
+        client,
+        [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        generation_config,
+    )
+    result = []
+    for idx, item in enumerate(items[:target_questions], start=1):
+        item.setdefault("candidate_id", f"{chunk.chunk_id}_Q{idx:03d}")
+        item.setdefault("source_doc", chunk.doc_name)
+        item.setdefault("source_sections", [chunk.heading_path])
+        item.setdefault("source_chunk_ids", [chunk.chunk_id])
+        item.setdefault("answer_scope", "single_section")
+        item.setdefault("question_type", "section_explanation")
+        result.append(normalize_question_item(item))
+    return result
+
+
 def review_and_select_questions(
     client: LLMClient,
     candidates: list[dict[str, Any]],
@@ -570,9 +755,10 @@ def review_and_select_questions(
 3. 题型尽量均衡：fact、process、constraint、interface、exception、dependency、cross_doc。
 4. 保留少量跨文档/跨模块问题，但不要超过 20%。
 5. 优先选择证据明确、答案边界清晰、人工复核价值高的问题。
-6. 删除重复题、过宽题、答案过短题、不可回答题。
-7. Ground Truth 必须完全由证据支持，必要时可轻微修订。
-8. 使用{generation_config["language"]}。
+6. 在 section_detailed 模式下，优先保留能够支撑多段解释的问题；不要因为 Ground Truth 较长就判定为冗余。
+7. 删除重复题、过宽题、答案过短题、不可回答题。
+8. Ground Truth 必须完全由证据支持，必要时可轻微修订；如果答案只有一句话，应优先淘汰。
+9. 使用{generation_config["language"]}。
 
 候选题：
 {compact_candidates}
@@ -914,6 +1100,83 @@ def main(argv: Iterable[str]) -> int:
     final_questions: list[dict[str, Any]] = []
     all_knowledge_points: list[dict[str, Any]] = []
     save_progress(args.output, "chunks_selected", final_questions, candidates, all_knowledge_points, all_chunks, config, errors)
+
+    generation_mode = str(gen_config.get("generation_mode", "section_detailed")).lower()
+    if generation_mode == "section_detailed":
+        questions_per_chunk = max(1, int(gen_config.get("questions_per_chunk", 2)))
+        max_consecutive_errors = int(gen_config.get("max_consecutive_llm_errors", 3))
+        consecutive_errors = 0
+
+        for idx, chunk in enumerate(all_chunks, start=1):
+            if len(candidates) >= candidate_budget:
+                break
+            remaining_budget = max(0, candidate_budget - len(candidates))
+            target_for_chunk = min(questions_per_chunk, remaining_budget)
+            if target_for_chunk <= 0:
+                break
+
+            safe_print(
+                f"[{idx}/{len(all_chunks)}] Generating detailed questions: "
+                f"{chunk.chunk_id} {chunk.heading_path}"
+            )
+            try:
+                chunk_candidates = generate_section_detailed_candidates(
+                    client,
+                    chunk,
+                    gen_config,
+                    target_for_chunk,
+                )
+                candidates.extend(chunk_candidates[:remaining_budget])
+                consecutive_errors = 0
+            except Exception as exc:  # noqa: BLE001
+                consecutive_errors += 1
+                add_error(errors, "generate_section_detailed_candidates", chunk.chunk_id, str(exc))
+                safe_print(f"  Failed, skipped: {exc}")
+                if not continue_on_error:
+                    raise
+                if max_consecutive_errors > 0 and consecutive_errors >= max_consecutive_errors:
+                    add_error(
+                        errors,
+                        "generate_section_detailed_candidates",
+                        "abort_remaining_chunks",
+                        f"Stopped after {consecutive_errors} consecutive LLM errors.",
+                    )
+                    safe_print(f"  Stopped remaining chunks after {consecutive_errors} consecutive LLM errors.")
+                    break
+
+            save_progress(
+                args.output,
+                f"detailed_candidates_chunk_{idx}",
+                final_questions,
+                candidates,
+                all_knowledge_points,
+                all_chunks,
+                config,
+                errors,
+            )
+
+        safe_print(f"Generated {len(candidates)} candidates.")
+        safe_print("Reviewing and selecting final questions")
+        if candidates:
+            try:
+                final_questions = review_and_select_questions(client, candidates, all_knowledge_points, gen_config)
+            except Exception as exc:  # noqa: BLE001
+                add_error(errors, "review_and_select_questions", "final_review", str(exc))
+                safe_print(f"  Final review failed, using fallback selection: {exc}")
+                if not continue_on_error:
+                    raise
+                final_questions = fallback_select_questions(candidates, target_count)
+        else:
+            add_error(errors, "review_and_select_questions", "final_review", "No candidates generated.")
+
+        if not final_questions and candidates:
+            final_questions = fallback_select_questions(candidates, target_count)
+
+        safe_print(f"Selected {len(final_questions)} final questions.")
+        write_excel(args.output, final_questions, candidates, all_knowledge_points, all_chunks, config, errors)
+        save_progress(args.output, "completed", final_questions, candidates, all_knowledge_points, all_chunks, config, errors)
+        safe_print(f"Wrote Excel: {args.output.resolve()}")
+        return 0
 
     checkpoint_interval = max(1, int(gen_config.get("checkpoint_interval_chunks", 1)))
     max_consecutive_errors = int(gen_config.get("max_consecutive_llm_errors", 3))
