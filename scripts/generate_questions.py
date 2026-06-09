@@ -52,7 +52,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "checkpoint_interval_chunks": 1,
         "checkpoint_json": True,
         "json_repair_retries": 1,
-        "temperature": 0.2,
+        "temperature": 0.1,
         "section_include_keywords": [
             "功能",
             "设计",
@@ -130,7 +130,7 @@ class LLMClient:
         self.timeout = int(config.get("timeout", 120))
         self.retries = int(config.get("retries", 2))
 
-    def chat(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str:
+    def chat(self, messages: list[dict[str, str]], temperature: float = 0.1) -> str:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -678,7 +678,8 @@ def generate_section_detailed_candidates(
     system_prompt = (
         "你是一位软件研发知识库 TestBench 出题专家。你需要基于软件设计文档的一个完整章节，"
         "生成适合评估 RAG 知识库效果的综合型问题和标准答案。标准答案必须完全基于输入章节，"
-        "不允许补充文档外信息。只输出 JSON 数组，不要输出解释。"
+        "不允许补充文档外信息。文档中的缩写、英文术语、变量名、模块名、接口名和专有名词"
+        "必须保持原文写法，不得自行翻译、扩写、解释或猜测其含义。只输出 JSON 数组，不要输出解释。"
     )
     user_prompt = f"""
 请基于以下软件设计文档章节生成 {target_questions} 道综合型问答。
@@ -689,6 +690,8 @@ def generate_section_detailed_candidates(
 3. 问题应适合研发、测试、维护人员查阅设计文档时提出。
 4. 避免只能一句话回答的问题，例如“某字段是什么”“某接口叫什么”“是否支持某功能”。
 5. 如果当前章节不足以支撑多段答案，可以少生成或返回空数组。
+6. 问题中的缩写、英文术语、变量名、模块名、接口名和专有名词必须保持原文写法。
+7. 不得为术语添加原文未提供的中文释义、全称、角色定义或括号注释。例如原文写作 WS、chuck、operator，问题中仍应原样使用，不得改写为“WS（……）”“chuck（……）”或“operator（操作员）”。
 
 Ground Truth 要求：
 1. 不要只写一句话；每个 ground_truth 写成 {answer_min_paragraphs}~{answer_max_paragraphs} 个自然段。
@@ -696,7 +699,10 @@ Ground Truth 要求：
 3. 回答应先概括该章节描述的功能/架构/流程目标，再展开说明关键设计内容。
 4. 如果章节中包含流程、接口、字段、状态、约束、异常、上下游依赖或软件层交互，应在答案中一并说明。
 5. 必须忠实于输入章节；文档没有明确说明的内容不要推断。
-6. 使用{generation_config["language"]}。
+6. 全面回答不等于补充背景知识。只能组织、归纳和转述章节中明确存在的信息；信息不足时可以少写，但不能猜测。
+7. 所有缩写和专有术语必须原样保留。只有当输入章节明确给出了全称、中文含义或定义时，才能引用该定义。
+8. 不得擅自在术语后添加括号释义，不得根据常识将 operator、WS、chuck 等术语翻译或展开。
+9. 使用{generation_config["language"]}。
 
 文档信息：
 doc_id: {chunk.doc_id}
@@ -736,15 +742,19 @@ def review_and_select_questions(
     candidates: list[dict[str, Any]],
     knowledge_points: list[dict[str, Any]],
     generation_config: dict[str, Any],
+    source_chunks: list[Chunk] | None = None,
 ) -> list[dict[str, Any]]:
     target_count = int(generation_config["target_count"])
-    compact_candidates = truncate_json(candidates, generation_config["max_llm_input_chars"] // 2)
-    compact_points = compact_knowledge_points(knowledge_points, generation_config["max_llm_input_chars"] // 2)
+    max_input_chars = int(generation_config["max_llm_input_chars"])
+    compact_candidates = truncate_json(candidates, max_input_chars // 2)
+    compact_points = compact_knowledge_points(knowledge_points, max_input_chars // 4)
+    compact_sources = build_review_source_context(source_chunks or [], max_input_chars // 4)
 
     system_prompt = (
         "你是一位严格的软件知识库评测集审核专家。你的任务是从候选问题中筛选最终 TestBench "
         "题集，并修正少量表述问题。你需要优先保证可回答性、证据充分性和题型覆盖。"
-        "只输出 JSON 数组，不要输出解释。"
+        "审核时必须保证缩写、英文术语、变量名、模块名、接口名和专有名词忠实于来源文档，"
+        "不得自行翻译、扩写、解释或猜测其含义。只输出 JSON 数组，不要输出解释。"
     )
     user_prompt = f"""
 请从以下候选问答中筛选最终 TestBench 题集。
@@ -758,13 +768,19 @@ def review_and_select_questions(
 6. 在 section_detailed 模式下，优先保留能够支撑多段解释的问题；不要因为 Ground Truth 较长就判定为冗余。
 7. 删除重复题、过宽题、答案过短题、不可回答题。
 8. Ground Truth 必须完全由证据支持，必要时可轻微修订；如果答案只有一句话，应优先淘汰。
-9. 使用{generation_config["language"]}。
+9. 检查问题和 Ground Truth 是否擅自翻译、扩写或解释了原文术语。原文未提供的括号释义、缩写展开、中文翻译或角色定义必须删除；无法可靠修正时淘汰该题。
+10. 例如来源文档只写 WS、chuck、operator 时，输出也必须原样保留，不得写成“WS（……）”“chuck（……）”或“operator（操作员）”。
+11. 只有来源文档明确给出术语定义时，才能在答案中引用该定义。
+12. 使用{generation_config["language"]}。
 
 候选题：
 {compact_candidates}
 
 相关知识点：
 {compact_points}
+
+来源章节原文：
+{compact_sources}
 
 输出 JSON 数组，每个对象字段为：
 question_id, question, ground_truth, question_type, difficulty, answer_scope,
@@ -783,6 +799,23 @@ evidence_summary, quality_score, review_reason
         item["question_id"] = item.get("question_id") or f"Q{idx:03d}"
         final_questions.append(item)
     return final_questions
+
+
+def build_review_source_context(chunks: list[Chunk], max_chars: int) -> str:
+    if not chunks:
+        return "无额外来源章节；请仅依据候选题所附证据审核。"
+
+    pieces = []
+    used = 0
+    for chunk in chunks:
+        header = f"\n[{chunk.chunk_id} | {chunk.doc_name} | {chunk.heading_path}]\n"
+        available = max_chars - used - len(header)
+        if available <= 0:
+            break
+        content = chunk.content[:available]
+        pieces.append(header + content)
+        used += len(header) + len(content)
+    return "".join(pieces).strip()
 
 
 def build_source_excerpt(chunks: list[Chunk], max_chars: int) -> str:
@@ -1159,7 +1192,13 @@ def main(argv: Iterable[str]) -> int:
         safe_print("Reviewing and selecting final questions")
         if candidates:
             try:
-                final_questions = review_and_select_questions(client, candidates, all_knowledge_points, gen_config)
+                final_questions = review_and_select_questions(
+                    client,
+                    candidates,
+                    all_knowledge_points,
+                    gen_config,
+                    source_chunks=all_chunks,
+                )
             except Exception as exc:  # noqa: BLE001
                 add_error(errors, "review_and_select_questions", "final_review", str(exc))
                 safe_print(f"  Final review failed, using fallback selection: {exc}")
