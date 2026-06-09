@@ -55,6 +55,7 @@ python scripts/generate_questions.py --input-files "D:\a.md" "D:\b.md" --config 
 - `max_total_chunks`: 本次运行最多处理的总 chunk 数，默认 30。
 - `questions_per_chunk`: 每个章节 chunk 最多生成的问题数，默认 2。
 - `answer_min_paragraphs` / `answer_max_paragraphs`: Ground Truth 默认 2~4 个自然段。
+- `temperature`: 默认 0.1，降低随机性和术语自由发挥。
 - `max_consecutive_llm_errors`: 连续 LLM 失败阈值，默认 3，达到后停止后续 LLM 调用并保留已有结果。
 
 如果只想更快地看一版质量，可以把 `max_chunks_per_doc` 改成 3~5，把 `target_count` 改成 10~20。
@@ -66,6 +67,8 @@ python scripts/generate_questions.py --input-files "D:\a.md" "D:\b.md" --config 
 在默认的 `section_detailed` 模式下，脚本不会均匀抽样 chunk，而是会跳过目录、修订记录、术语、参考文献等低价值章节，再根据标题和内容中的关键词打分，优先选择功能、设计、架构、流程、接口、模块、软件层、CPD、异常、状态、数据、时序、交互、约束等章节。
 
 选中的每个章节会直接输入 LLM 生成综合问答，Ground Truth 会要求写成多段解释，适合软件设计文档中的 CPD 项功能说明、软件层架构说明、模块协作和端到端流程。
+
+提示词会要求缩写、英文术语、变量名、模块名、接口名和专有名词保持原文写法。除非来源章节明确给出了定义，否则不得自行翻译、展开缩写或添加括号释义，例如不得擅自把 `operator` 写成 `operator（操作员）`。
 
 ## 失败与中途保存
 
