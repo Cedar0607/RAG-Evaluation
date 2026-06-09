@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
+import importlib
 import json
 import math
 import sys
+import types
 from pathlib import Path
 from typing import Any, Optional
 
@@ -47,6 +49,32 @@ def check_python_version() -> None:
         raise RuntimeError(
             f"Ragas 0.4.3 requires Python 3.10+. Current Python is {sys.version.split()[0]}."
         )
+
+
+def install_ragas_043_vertexai_compatibility_shims() -> None:
+    """Work around obsolete optional VertexAI imports in Ragas 0.4.3.
+
+    The evaluation in this script uses an OpenAI-compatible local endpoint and
+    never instantiates these placeholder classes. They only allow Ragas to
+    finish importing when a newer langchain-community removed the old modules.
+    """
+
+    optional_modules = {
+        "langchain_community.chat_models.vertexai": "ChatVertexAI",
+        "langchain_community.llms.vertexai": "VertexAI",
+    }
+    for module_name, class_name in optional_modules.items():
+        try:
+            importlib.import_module(module_name)
+            continue
+        except ModuleNotFoundError as exc:
+            if exc.name != module_name:
+                raise
+
+        module = types.ModuleType(module_name)
+        placeholder = type(class_name, (), {})
+        setattr(module, class_name, placeholder)
+        sys.modules[module_name] = module
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -203,6 +231,7 @@ async def main_async() -> int:
     args = parse_args()
     check_python_version()
     config = load_config(args.config)
+    install_ragas_043_vertexai_compatibility_shims()
 
     try:
         from openai import AsyncOpenAI

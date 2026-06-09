@@ -121,3 +121,5 @@ python ragas_test.py --input "D:\data\ragas_input.xlsx" --output "output\ragas_r
 ```
 
 脚本会评估 `context_precision`、`context_recall`、`faithfulness` 和 `factual_correctness`，把逐题结果写入原数据 sheet，并创建 `ragas_summary` 汇总 sheet。每处理完一题都会保存输出文件。
+
+Judge LLM 仍通过 `ragas_config.json` 中的 OpenAI-compatible 本地接口调用。脚本包含针对 Ragas 0.4.3 旧 VertexAI 可选导入路径的兼容处理，不需要为本地 LLM 安装或配置 VertexAI。
