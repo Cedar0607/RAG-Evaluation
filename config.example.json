@@ -34,7 +34,7 @@
     "checkpoint_interval_chunks": 1,
     "checkpoint_json": true,
     "json_repair_retries": 1,
-    "temperature": 0.2,
+    "temperature": 0.1,
     "section_include_keywords": [
       "功能",
       "设计",
