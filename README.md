@@ -46,15 +46,26 @@ python scripts/generate_questions.py --input-files "D:\a.md" "D:\b.md" --config 
 
 默认配置以“快速生成几十个问题，方便人工检查”为目标：
 
+- `generation_mode`: 默认 `section_detailed`，按章节直接生成综合型问题和较长 Ground Truth。
 - `target_count`: 最终题数，默认 30。
 - `candidate_multiplier`: 候选题倍率，默认 1.2，所以候选题大约 36 道。
 - `max_candidates_total`: 候选题硬上限，默认 45，即使 LLM 多输出也会截断。
-- `max_chunks_per_doc`: 每篇文档最多处理的 chunk 数，默认 8。
-- `max_total_chunks`: 本次运行最多处理的总 chunk 数，默认 40。
-- `knowledge_points_per_chunk`: 每个 chunk 最多抽取的知识点数，默认 6。
+- `max_chunk_chars`: 单个章节 chunk 最大字符数，默认 80000。
+- `max_chunks_per_doc`: 每篇文档最多处理的高价值章节 chunk 数，默认 5。
+- `max_total_chunks`: 本次运行最多处理的总 chunk 数，默认 30。
+- `questions_per_chunk`: 每个章节 chunk 最多生成的问题数，默认 2。
+- `answer_min_paragraphs` / `answer_max_paragraphs`: Ground Truth 默认 2~4 个自然段。
 - `max_consecutive_llm_errors`: 连续 LLM 失败阈值，默认 3，达到后停止后续 LLM 调用并保留已有结果。
 
 如果只想更快地看一版质量，可以把 `max_chunks_per_doc` 改成 3~5，把 `target_count` 改成 10~20。
+
+## 当前切分方式
+
+脚本会先按 Markdown 标题切分章节。如果某个章节超过 `max_chunk_chars`，才会按长度继续切分，并使用 `chunk_overlap_chars` 做少量重叠。
+
+在默认的 `section_detailed` 模式下，脚本不会均匀抽样 chunk，而是会跳过目录、修订记录、术语、参考文献等低价值章节，再根据标题和内容中的关键词打分，优先选择功能、设计、架构、流程、接口、模块、软件层、CPD、异常、状态、数据、时序、交互、约束等章节。
+
+选中的每个章节会直接输入 LLM 生成综合问答，Ground Truth 会要求写成多段解释，适合软件设计文档中的 CPD 项功能说明、软件层架构说明、模块协作和端到端流程。
 
 ## 失败与中途保存
 
@@ -71,7 +82,7 @@ python scripts/generate_questions.py --input-files "D:\a.md" "D:\b.md" --config 
 
 - `final_questions`：最终题集，约 30 题。
 - `candidates`：候选题，方便追溯被筛掉的题。
-- `knowledge_points`：从文档抽取的知识点。
+- `knowledge_points`：旧的知识点模式会使用；默认 `section_detailed` 模式下通常为空。
 - `chunks`：Markdown 分块信息。
 - `errors`：LLM 超时、解析失败等错误记录。
 - `run_config`：本次运行配置摘要。
