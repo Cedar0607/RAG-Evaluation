@@ -91,3 +91,33 @@ python scripts/generate_questions.py --input-files "D:\a.md" "D:\b.md" --config 
 - `run_config`：本次运行配置摘要。
 
 每道题会保留来源文档、章节、chunk id、证据摘要和 required evidence，后续可以接 Dify API 生成检索 chunk 和 answer，再用于 Ragas。
+
+## Ragas 两题试跑
+
+`ragas_test.py` 读取包含以下四列的 Excel：
+
+- `question`
+- `answer`
+- `contexts`
+- `ground_truths`
+
+`contexts` 推荐保存为 JSON 数组字符串，例如：
+
+```json
+["父段内容1", "父段内容2"]
+```
+
+Ragas 0.4.3 需要 Python 3.10 或更高版本。安装依赖并创建配置：
+
+```powershell
+pip install -r requirements.txt
+Copy-Item ragas_config.example.json ragas_config.json
+```
+
+修改 `ragas_config.json` 中的 Judge LLM 接口后运行：
+
+```powershell
+python ragas_test.py --input "D:\data\ragas_input.xlsx" --output "output\ragas_result.xlsx" --limit 2
+```
+
+脚本会评估 `context_precision`、`context_recall`、`faithfulness` 和 `factual_correctness`，把逐题结果写入原数据 sheet，并创建 `ragas_summary` 汇总 sheet。每处理完一题都会保存输出文件。

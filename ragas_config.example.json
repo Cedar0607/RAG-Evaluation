@@ -1,0 +1,9 @@
+{
+  "judge": {
+    "endpoint": "http://localhost:8000/v1/chat/completions",
+    "api_key": "your_api_key",
+    "model": "Deepseek-V4-flash",
+    "timeout": 180,
+    "retries": 2
+  }
+}
