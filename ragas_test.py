@@ -4,6 +4,7 @@ import argparse
 import ast
 import asyncio
 import importlib
+import inspect
 import json
 import math
 import sys
@@ -91,6 +92,35 @@ def normalize_base_url(endpoint: str) -> str:
     if url.endswith(suffix):
         url = url[: -len(suffix)]
     return url
+
+
+def create_ragas_llm(llm_factory: Any, judge: dict[str, Any], client: Any) -> Any:
+    factory_parameters = inspect.signature(llm_factory).parameters
+    accepts_extra_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in factory_parameters.values()
+    )
+    factory_kwargs: dict[str, Any] = {
+        "client": client,
+    }
+
+    max_tokens = int(judge.get("max_tokens", 4096))
+    if "max_tokens" not in factory_parameters and not accepts_extra_kwargs:
+        raise RuntimeError(
+            "The installed Ragas llm_factory does not expose max_tokens. "
+            "Expected Ragas 0.4.3; please verify the active virtual environment."
+        )
+    factory_kwargs["max_tokens"] = max_tokens
+
+    if "temperature" in factory_parameters or accepts_extra_kwargs:
+        factory_kwargs["temperature"] = float(judge.get("temperature", 0.0))
+
+    print(
+        f"Judge LLM: model={judge['model']}, max_tokens={max_tokens}, "
+        f"temperature={judge.get('temperature', 0.0)}",
+        flush=True,
+    )
+    return llm_factory(judge["model"], **factory_kwargs)
 
 
 def parse_contexts(value: Any) -> list[str]:
@@ -252,7 +282,7 @@ async def main_async() -> int:
         timeout=float(judge.get("timeout", 180)),
         max_retries=int(judge.get("retries", 2)),
     )
-    llm = llm_factory(judge["model"], client=client)
+    llm = create_ragas_llm(llm_factory, judge, client)
     metrics = {
         "context_precision": ContextPrecision(llm=llm),
         "context_recall": ContextRecall(llm=llm),
