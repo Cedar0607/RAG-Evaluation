@@ -21,6 +21,8 @@ METRIC_COLUMNS = (
     "context_recall",
     "faithfulness",
     "factual_correctness",
+    "answer_relevancy",
+    "answer_correctness",
     "ragas_error",
 )
 
@@ -88,9 +90,10 @@ def load_config(path: Path) -> dict[str, Any]:
 
 def normalize_base_url(endpoint: str) -> str:
     url = endpoint.rstrip("/")
-    suffix = "/chat/completions"
-    if url.endswith(suffix):
-        url = url[: -len(suffix)]
+    for suffix in ("/chat/completions", "/embeddings"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)]
+            break
     return url
 
 
@@ -226,6 +229,15 @@ async def score_row(
             "response": answer,
             "reference": reference,
         },
+        "answer_relevancy": {
+            "user_input": question,
+            "response": answer,
+        },
+        "answer_correctness": {
+            "user_input": question,
+            "response": answer,
+            "reference": reference,
+        },
     }
 
     for name, metric in metrics.items():
@@ -265,8 +277,11 @@ async def main_async() -> int:
 
     try:
         from openai import AsyncOpenAI
+        from ragas.embeddings import embedding_factory
         from ragas.llms import llm_factory
         from ragas.metrics.collections import (
+            AnswerCorrectness,
+            AnswerRelevancy,
             ContextPrecision,
             ContextRecall,
             FactualCorrectness,
@@ -283,11 +298,41 @@ async def main_async() -> int:
         max_retries=int(judge.get("retries", 2)),
     )
     llm = create_ragas_llm(llm_factory, judge, client)
+
+    embedding_config = config["embedding"]
+    embedding_client = AsyncOpenAI(
+        api_key=embedding_config.get("api_key") or "not-required",
+        base_url=normalize_base_url(embedding_config["endpoint"]),
+        timeout=float(embedding_config.get("timeout", 180)),
+        max_retries=int(embedding_config.get("retries", 2)),
+    )
+    embeddings = embedding_factory(
+        "openai",
+        model=embedding_config["model"],
+        client=embedding_client,
+        interface="modern",
+    )
+    print(
+        f"Embedding model: model={embedding_config['model']}, "
+        f"base_url={normalize_base_url(embedding_config['endpoint'])}",
+        flush=True,
+    )
+
     metrics = {
         "context_precision": ContextPrecision(llm=llm),
         "context_recall": ContextRecall(llm=llm),
         "faithfulness": Faithfulness(llm=llm),
         "factual_correctness": FactualCorrectness(llm=llm),
+        "answer_relevancy": AnswerRelevancy(
+            llm=llm,
+            embeddings=embeddings,
+            strictness=int(config.get("metrics", {}).get("answer_relevancy_strictness", 3)),
+        ),
+        "answer_correctness": AnswerCorrectness(
+            llm=llm,
+            embeddings=embeddings,
+            weights=list(config.get("metrics", {}).get("answer_correctness_weights", [0.75, 0.25])),
+        ),
     }
 
     workbook = load_workbook(args.input)

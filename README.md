@@ -120,8 +120,10 @@ Copy-Item ragas_config.example.json ragas_config.json
 python ragas_test.py --input "D:\data\ragas_input.xlsx" --output "output\ragas_result.xlsx" --limit 2
 ```
 
-脚本会评估 `context_precision`、`context_recall`、`faithfulness` 和 `factual_correctness`，把逐题结果写入原数据 sheet，并创建 `ragas_summary` 汇总 sheet。每处理完一题都会保存输出文件。
+脚本会评估 `context_precision`、`context_recall`、`faithfulness`、`factual_correctness`、`answer_relevancy` 和 `answer_correctness`，把逐题结果写入原数据 sheet，并创建 `ragas_summary` 汇总 sheet。每处理完一题都会保存输出文件。
 
 Judge LLM 仍通过 `ragas_config.json` 中的 OpenAI-compatible 本地接口调用。脚本包含针对 Ragas 0.4.3 旧 VertexAI 可选导入路径的兼容处理，不需要为本地 LLM 安装或配置 VertexAI。
 
 Judge 输出长度由 `ragas_config.json` 中的 `judge.max_tokens` 控制，默认 4096。若较长的 contexts 或 Ground Truth 仍触发输出截断，可以提高到 8192；同时需要确认本地模型服务允许该输出长度。
+
+`answer_relevancy` 和 `answer_correctness` 使用 `ragas_config.json` 中独立配置的 OpenAI-compatible Embedding 接口。默认模型名为 `Qwen3-Embedding-4B`，请将 `embedding.endpoint` 修改为实际的 `/v1/embeddings` 地址。

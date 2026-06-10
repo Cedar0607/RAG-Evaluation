@@ -7,5 +7,19 @@
     "temperature": 0.0,
     "timeout": 180,
     "retries": 2
+  },
+  "embedding": {
+    "endpoint": "http://localhost:8001/v1/embeddings",
+    "api_key": "your_api_key",
+    "model": "Qwen3-Embedding-4B",
+    "timeout": 180,
+    "retries": 2
+  },
+  "metrics": {
+    "answer_relevancy_strictness": 3,
+    "answer_correctness_weights": [
+      0.75,
+      0.25
+    ]
   }
 }
