@@ -1,4 +1,15 @@
 ```
+healthcheck:
+  test:
+    - CMD-SHELL
+    - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5)"
+  interval: 10s
+  timeout: 8s
+  retries: 30
+  start_period: 30s
+```
+
+```
 docker exec material-system-backend-1 \
   python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health').read().decode())"
 
