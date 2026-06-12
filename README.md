@@ -1,3 +1,8 @@
+```
+docker exec material-system-backend-1 \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health').read().decode())"
+
+```
 # 软件研发知识库 TestBench 出题脚本
 
 这个脚本用于从 OCR 后的 Markdown 软件设计说明书中生成 RAG 评测用问题和标准答案，并输出 Excel，方便人工复核。
