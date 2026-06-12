@@ -127,3 +127,8 @@ Judge LLM 仍通过 `ragas_config.json` 中的 OpenAI-compatible 本地接口调
 Judge 输出长度由 `ragas_config.json` 中的 `judge.max_tokens` 控制，默认 4096。若较长的 contexts 或 Ground Truth 仍触发输出截断，可以提高到 8192；同时需要确认本地模型服务允许该输出长度。
 
 `answer_relevancy` 和 `answer_correctness` 使用 `ragas_config.json` 中独立配置的 OpenAI-compatible Embedding 接口。默认模型名为 `Qwen3-Embedding-4B`，请将 `embedding.endpoint` 修改为实际的 `/v1/embeddings` 地址。
+
+```
+docker inspect material-system-backend-1 \
+  --format '{{range .State.Health.Log}}{{println .Output}}{{end}}'
+```
